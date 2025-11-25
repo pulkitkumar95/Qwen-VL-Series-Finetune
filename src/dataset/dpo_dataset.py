@@ -269,9 +269,11 @@ class DataCollatorForDPODataset(object):
         chosen = pad_sequence(batch_chosen_ids, padding_side='right', padding_value=self.pad_token_id)
         rejected = pad_sequence(batch_rejected_ids, padding_side='right', padding_value=self.pad_token_id)
 
-        prompt_attention_mask = prompt_input_ids != self.pad_token_id
-        chosen_attention_mask = chosen != self.pad_token_id
-        rejected_attention_mask = rejected != self.pad_token_id
+        # torch.argmax used in `trl.trainer.utils.flush_left` does not accept bool tensors on some torch versions
+        # (e.g., torch==2.1); keep masks int to stay compatible.
+        prompt_attention_mask = (prompt_input_ids != self.pad_token_id).long()
+        chosen_attention_mask = (chosen != self.pad_token_id).long()
+        rejected_attention_mask = (rejected != self.pad_token_id).long()
 
 
         data_dict = {

@@ -184,6 +184,10 @@ class QwenDPOTrainer(DPOTrainer):
 
     def _save_checkpoint(self, model, trial):
         if self.args.lora_enable:
+            # Avoid writing checkpoints from non-saving ranks
+            if not self.args.should_save:
+                return
+
             checkpoint_folder = f"{PREFIX_CHECKPOINT_DIR}-{self.state.global_step}"
 
             if self.hp_search_backend is None and trial is None:
@@ -192,6 +196,7 @@ class QwenDPOTrainer(DPOTrainer):
             run_dir = self._get_output_dir(trial=trial)
             output_dir = os.path.join(run_dir, checkpoint_folder)
 
+            os.makedirs(output_dir, exist_ok=True)
             self.save_model(output_dir, _internal_call=True)
 
             non_lora_weights = get_peft_state_non_lora_maybe_zero_3(self.model.named_parameters(), require_grad_only=False)
