@@ -218,10 +218,19 @@ class SupervisedDataset(Dataset):
             response_input_ids = processor.tokenizer(gpt_response, add_special_tokens=False, padding=False, return_tensors='pt')['input_ids']
 
             input_ids = torch.cat([prompt_input_ids, response_input_ids], dim=1).squeeze(0)
+            # In causal LMs, logits[i] predicts input_ids[i+1]
+            # So labels[i] should be input_ids[i+1]
+            # For response: we want to predict response_token_0 from the last prompt position
+            response_labels = response_input_ids.squeeze(0)
+            prompt_len = len(prompt_input_ids[0])
+            
+            # Create labels: [IGNORE for prompt, response tokens shifted, IGNORE at end]
+            # labels[i] = input_ids[i+1], so labels[prompt_len-1] = response_token_0
             labels = torch.cat(
                 [
-                    torch.tensor([IGNORE_INDEX] * len(prompt_input_ids[0])),
-                    response_input_ids.squeeze(0),
+                    torch.tensor([IGNORE_INDEX] * (prompt_len - 1)),  # All prompt tokens except last
+                    response_labels,  # Response tokens: will be at positions [prompt_len-1, prompt_len, ...]
+                    torch.tensor([IGNORE_INDEX]),  # No token to predict after last response token
                 ],
                 dim=0,
             )
