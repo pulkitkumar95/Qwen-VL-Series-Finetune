@@ -168,3 +168,5 @@ scripts_tmp/
 logs/*.log
 
 testing.ipynb
+out_slurm/
+wandb/
