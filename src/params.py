@@ -150,6 +150,7 @@ class TrainingArguments(HFTrainingArguments):
     lora_namespan_exclude: str = field(default=None, metadata={"help": "List of namespan to exclude for LoRA"})
     num_lora_modules: int = -1
     use_liger_kernel: bool = True
+    remove_unused_columns: bool = False
 
 @dataclass
 class DPOArguments(DPOConfigTRL):
@@ -290,3 +291,6 @@ class DataArguments:
     video_resized_height: int = field(default=None)
     fps: Optional[int] = field(default=None, metadata={"help": "Frames per second for video data."})
     nframes: Optional[int] = field(default=None, metadata={"help": "Number of frames for video data."})
+    eval_dataset_name: Optional[str] = field(default=None, metadata={"help": "Name of the evaluation dataset."})
+    result_dump_dir: Optional[str] = field(default=None, metadata={"help": "Directory to dump the evaluation results."})
+    

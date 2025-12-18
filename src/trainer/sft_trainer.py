@@ -1,7 +1,8 @@
 import os
 import torch
 import torch.nn as nn
-
+from torch.utils.data import DataLoader
+from typing import Optional
 from transformers import Trainer
 from transformers.trainer import (
     is_sagemaker_mp_enabled,
@@ -35,6 +36,7 @@ class QwenSFTTrainer(Trainer):
 
     def __init__(self, *args, **kwargs):
         super(QwenSFTTrainer, self).__init__(*args, **kwargs)
+        self.keys_to_remove_in_eval  = ['question_key', 'task_type'] 
 
     def create_optimizer(self):
         """
@@ -207,14 +209,75 @@ class QwenSFTTrainer(Trainer):
     
     #     return loss
 
-    def prediction_step(self, model, inputs, prediction_loss_only, ignore_keys=None):
-        labels = inputs.get("labels") if "labels" in inputs else None
+    # def prediction_step(self, model, inputs, prediction_loss_only, ignore_keys=None):
+    #     breakpoint()
+    #     labels = inputs.get("labels") if "labels" in inputs else None
 
-        with torch.no_grad():
-            outputs = model(**inputs)
-            loss = outputs.loss if hasattr(outputs, "loss") else None
-            logits = outputs.logits if hasattr(outputs, "logits") else None
+    #     with torch.no_grad():
+    #         outputs = model(**inputs)
+    #         loss = outputs.loss if hasattr(outputs, "loss") else None
+    #         logits = outputs.logits if hasattr(outputs, "logits") else None
 
+    #     if prediction_loss_only:
+    #         return (loss, None, None)
+    #     return (loss, logits, labels)
+
+    def prediction_step(self, model, inputs, prediction_loss_only, ignore_keys=['question_key', 'task_type']):
+        """
+        Performs an evaluation/test step. Uses model.generate for text generation 
+        when predictions are required (i.e., prediction_loss_only=False).
+        """
         if prediction_loss_only:
+            # Original behavior: compute only loss using model forward
+            with torch.no_grad():
+                outputs = model(**inputs)
+                loss = outputs.loss if hasattr(outputs, "loss") else None
             return (loss, None, None)
-        return (loss, logits, labels)
+        else:
+            # Custom generation step
+            labels = inputs.get("labels").to(model.device) if "labels" in inputs else None
+            
+            # Prepare inputs for generation. We only need the input_ids and attention_mask.
+            
+            input_ids = inputs['input_ids']
+
+            # Define generation arguments. You may need to pass these via your Trainer arguments
+            # or hardcode them based on your Qwen model's requirements (e.g., max_new_tokens).
+            # I'm using max_new_tokens=128 as a sensible default.
+            generation_kwargs = {
+                "max_new_tokens": getattr(self.args, "generation_max_length", 128),
+                # "num_beams": getattr(self.args, "generation_num_beams", 1),
+                # "do_sample": False, # Typically set to False for evaluation
+                # "synced_gpus": False if self.args.parallel_mode != "NOT_SET" else False,
+            }
+
+            # Remove tokens that may prevent generation (like labels)
+            # This is a common pattern to ensure only the prompt is passed to generate.
+            for k in ignore_keys or []:
+                if k in inputs:
+                    del inputs[k]
+            new_inputs = {}
+            for k in inputs:
+                if k not in self.keys_to_remove_in_eval:
+                    new_inputs[k] = inputs[k]
+            
+
+            with torch.no_grad():
+                # Perform generation
+                generated_tokens = model.generate(**new_inputs, max_new_tokens=128)
+
+            # If the model is not seq2seq, the generated tokens will include the prompt.
+            # We need to slice it to only get the newly generated tokens.
+            if generated_tokens.shape[-1] > input_ids.shape[-1]:
+                generated_tokens = generated_tokens[:, input_ids.shape[-1]:]
+            
+            # Loss computation is optional during prediction, but needed for the first return value.
+            # We will use the model forward pass here to get the loss for completeness.
+            # with torch.no_grad():
+            #     loss = model(**inputs).loss
+            loss = None
+
+            # Return loss, generated_tokens, and labels (for metric calculation)
+            # The generated_tokens serve as the "predictions"
+            return (loss, generated_tokens, labels)
+            

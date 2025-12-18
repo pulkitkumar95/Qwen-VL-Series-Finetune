@@ -1,3 +1,4 @@
+from pickle import NONE
 import re
 import torch
 
@@ -93,7 +94,8 @@ def get_image_info(image_path, min_pixel, max_pixel, width, height, image_patch_
 
     return image_input[0]
 
-def get_video_info(video_path, min_pixels, max_pixels, width, height, fps, image_patch_size, return_video_metadata=False):
+def get_video_info(video_path, min_pixels, max_pixels, width, height, fps, image_patch_size, return_video_metadata=False,
+                    nframes=None, duration=None):
     # Using this because of process_vision_info function
     # Need to fix this in the future
     content = {
@@ -101,9 +103,13 @@ def get_video_info(video_path, min_pixels, max_pixels, width, height, fps, image
         "video": video_path,
         "min_pixels": min_pixels,
         "max_pixels": max_pixels,
-        "fps": fps
     }
-
+    if fps is not None:
+        content["fps"] = fps
+    if nframes is not None:
+        content["nframes"] = nframes
+    if duration is not None:
+        content["duration"] = duration
     if width is not None and height is not None:
         content["resized_width"] = width
         content["resized_height"] = height

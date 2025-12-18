@@ -28,6 +28,7 @@ class SupervisedDataset(Dataset):
         data_args: DataArguments,
         model_id,
         padding=True,
+        mode='train'
     ):
         super(SupervisedDataset, self).__init__()
         if isinstance(data_path, str):
@@ -58,12 +59,14 @@ class SupervisedDataset(Dataset):
             self.image_patch_size = 14
             self.return_video_metadata = False
 
+        self.mode = mode
+
     def __len__(self):
         return len(self.list_data_dict)
 
     def __getitem__(self, i) -> Dict[str, torch.Tensor]:
         sources = self.list_data_dict[i]
-
+        og_data = sources.copy()
         is_video = False
 
         processor = self.processor
@@ -105,6 +108,10 @@ class SupervisedDataset(Dataset):
 
             if isinstance(video_files, str):
                 video_files = [video_files]
+                if 'duration' in sources:
+                    duration = float(sources['duration'])
+                else:
+                    duration = None
 
             videos = []
             for video_file in video_files:
@@ -119,7 +126,9 @@ class SupervisedDataset(Dataset):
                     self.video_resized_h, 
                     self.data_args.fps,
                     self.image_patch_size,
-                    return_video_metadata=self.return_video_metadata
+                    return_video_metadata=self.return_video_metadata,
+                    nframes=self.data_args.nframes,
+                    duration=duration
                 )
                 videos.append(video_input)
         else:
@@ -216,24 +225,37 @@ class SupervisedDataset(Dataset):
                 prompt_input_ids = processor.tokenizer(user_input, add_special_tokens=False, padding=False, return_tensors='pt')['input_ids']
 
             response_input_ids = processor.tokenizer(gpt_response, add_special_tokens=False, padding=False, return_tensors='pt')['input_ids']
-
-            input_ids = torch.cat([prompt_input_ids, response_input_ids], dim=1).squeeze(0)
-            # In causal LMs, logits[i] predicts input_ids[i+1]
-            # So labels[i] should be input_ids[i+1]
-            # For response: we want to predict response_token_0 from the last prompt position
-            response_labels = response_input_ids.squeeze(0)
             prompt_len = len(prompt_input_ids[0])
-            
-            # Create labels: [IGNORE for prompt, response tokens shifted, IGNORE at end]
-            # labels[i] = input_ids[i+1], so labels[prompt_len-1] = response_token_0
-            labels = torch.cat(
-                [
-                    torch.tensor([IGNORE_INDEX] * (prompt_len - 1)),  # All prompt tokens except last
-                    response_labels,  # Response tokens: will be at positions [prompt_len-1, prompt_len, ...]
-                    torch.tensor([IGNORE_INDEX]),  # No token to predict after last response token
-                ],
-                dim=0,
-            )
+            if self.mode=='train':
+                input_ids = torch.cat([prompt_input_ids, response_input_ids], dim=1).squeeze(0)
+                # In causal LMs, logits[i] predicts input_ids[i+1]
+                # So labels[i] should be input_ids[i+1]
+                # For response: we want to predict response_token_0 from the last prompt position
+                # response_labels = response_input_ids.squeeze(0)
+                
+                # # Create labels: [IGNORE for prompt, response tokens shifted, IGNORE at end]
+                # # labels[i] = input_ids[i+1], so labels[prompt_len-1] = response_token_0
+                # labels = torch.cat(
+                #     [
+                #         torch.tensor([IGNORE_INDEX] * (prompt_len - 1)),  # All prompt tokens except last
+                #         response_labels,  # Response tokens: will be at positions [prompt_len-1, prompt_len, ...]
+                #         torch.tensor([IGNORE_INDEX]),  # No token to predict after last response token
+                #     ],
+                #     dim=0,
+                # )
+
+                labels = torch.cat(
+                    [
+                        torch.tensor([IGNORE_INDEX] * len(prompt_input_ids[0])),
+                        response_input_ids.squeeze(0),
+                    ],
+                    dim=0,
+                )
+            else:
+                input_ids = prompt_input_ids.squeeze(0)
+                labels = response_input_ids.squeeze(0)
+
+        
 
             all_input_ids.append(input_ids)
             all_labels.append(labels)
@@ -254,6 +276,10 @@ class SupervisedDataset(Dataset):
             labels=labels,
         )
 
+        if self.mode=='test':
+            data_dict['question_key'] = og_data['question_key']
+            data_dict['task_type'] = og_data['task_type']
+        del og_data
         if pixel_key and grid_key:
             pixel_values = torch.cat(all_pixel_values, dim=0)
             image_thw = torch.cat(all_image_grid_thw, dim=0)
@@ -263,14 +289,14 @@ class SupervisedDataset(Dataset):
         if len(all_second_gird) > 0:
             second_gird = all_second_gird
             data_dict["second_per_grid_ts"] = second_gird
-
         return data_dict
 
 class DataCollatorForSupervisedDataset(object):
     """Collate examples for supervised fine-tuning."""
 
-    def __init__(self, pad_token_id: int):
+    def __init__(self, pad_token_id: int, padding_side='left'):
         self.pad_token_id = pad_token_id
+        self.padding_side = padding_side
 
     def __call__(self, examples):
         batch_input_ids = []
@@ -280,7 +306,9 @@ class DataCollatorForSupervisedDataset(object):
         batch_video_thw = []
         batch_image_thw = []
         batch_second_per_grid_ts = []
-
+        question_ids = []
+        task_types = []
+ 
         for example in examples:
             keys = example.keys()
             if "pixel_values_videos" in keys:
@@ -289,6 +317,11 @@ class DataCollatorForSupervisedDataset(object):
             elif "pixel_values" in keys:
                 batch_pixel_values.append(example["pixel_values"])
                 batch_image_thw.append(example["image_grid_thw"])
+            
+            if "question_key" in keys:
+                question_ids.append(example["question_key"])
+            if "task_type" in keys:
+                task_types.append(example["task_type"])
 
             batch_input_ids.append(example["input_ids"])
             batch_label_ids.append(example["labels"])
@@ -297,11 +330,11 @@ class DataCollatorForSupervisedDataset(object):
                 batch_second_per_grid_ts.extend(example["second_per_grid_ts"])
 
         input_ids = pad_sequence(
-            batch_input_ids, padding_side='right', padding_value=self.pad_token_id
+            batch_input_ids, padding_side=self.padding_side, padding_value=self.pad_token_id
         )
 
         attention_mask = input_ids != self.pad_token_id
-        labels = pad_sequence(batch_label_ids, padding_side='right', padding_value=IGNORE_INDEX)
+        labels = pad_sequence(batch_label_ids, padding_side=self.padding_side, padding_value=IGNORE_INDEX)
 
         data_dict = {
             'input_ids': input_ids,
@@ -323,13 +356,19 @@ class DataCollatorForSupervisedDataset(object):
 
         if len(batch_second_per_grid_ts) > 0:
             data_dict["second_per_grid_ts"] = batch_second_per_grid_ts
+        
+        if len(question_ids) > 0:
+            data_dict["question_key"] = question_ids
+        if len(task_types) > 0:
+            data_dict["task_type"] = task_types
 
         return data_dict
 
-def make_supervised_data_module(model_id, processor, data_args):
+def make_supervised_data_module(model_id, processor, data_args, mode='train'):
     """Make dataset and collator for supervised fine-tuning."""
     sft_dataset = SupervisedDataset(
-        data_path=data_args.data_path, processor=processor, data_args=data_args, model_id=model_id
+        data_path=data_args.data_path, processor=processor, data_args=data_args, model_id=model_id,
+        mode=mode
     )
     eval_dataset = None
     if data_args.eval_path is not None:
@@ -337,11 +376,13 @@ def make_supervised_data_module(model_id, processor, data_args):
               data_path=data_args.eval_path,
               processor=processor,
               data_args=data_args,
-              model_id=model_id
+              model_id=model_id,
+              mode=mode
           )
         
-    data_collator = DataCollatorForSupervisedDataset(pad_token_id=processor.tokenizer.pad_token_id)
+    data_collator = DataCollatorForSupervisedDataset(pad_token_id=processor.tokenizer.pad_token_id,
+    padding_side=processor.tokenizer.padding_side)
 
-    return dict(train_dataset=sft_dataset,
+    return dict[str, SupervisedDataset | DataCollatorForSupervisedDataset | None](train_dataset=sft_dataset,
                 eval_dataset=eval_dataset,
                 data_collator=data_collator)
