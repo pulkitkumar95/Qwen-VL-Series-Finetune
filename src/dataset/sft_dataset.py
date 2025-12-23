@@ -1,5 +1,7 @@
 import copy
 import os
+import numpy as np
+import pickle
 from typing import Dict
 import torch
 import transformers
@@ -7,6 +9,7 @@ import ujson as json
 from torch.utils.data import Dataset
 
 from src.params import DataArguments
+from einops import rearrange
 from src.constants import (
     IGNORE_INDEX,
     DEFAULT_IM_START_TOKEN,
