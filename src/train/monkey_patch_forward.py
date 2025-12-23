@@ -11,6 +11,89 @@ from transformers.utils import TransformersKwargs
 from transformers.processing_utils import Unpack
 from transformers.cache_utils import Cache
 from transformers.utils import is_torchdynamo_compiling
+from src.train.mokey_patch_processor import pt_processor_forward, get_pt_rope_index_qwen3vl
+from einops import rearrange
+import torch.nn.functional as F
+
+def feat_trajectory_allignment(video_embed_per_video, pred_track_per_video,
+                    video_grid_thw_per_video,
+                    spatial_merge_size=2,
+                    mode='bilinear', align_corners=True):
+    video_embed_per_video = rearrange(video_embed_per_video, "(t p q) c-> t p q c", 
+                                                            t=video_grid_thw_per_video[0],
+                                                            p=video_grid_thw_per_video[1]//spatial_merge_size, # /2 for spatial merge
+                                                            q=video_grid_thw_per_video[2]//spatial_merge_size) # /2 for spatial merge
+    feat_to_use = rearrange(video_embed_per_video, "t p q d-> t d p q")
+    pred_track_per_video = rearrange(pred_track_per_video, "t n c-> t n 1 c")
+    sampled_feat = F.grid_sample(feat_to_use, pred_track_per_video, mode=mode, 
+                                    align_corners=align_corners)
+                                    
+    sampled_feat = rearrange(sampled_feat, "t d n 1-> (t n) d")
+    return sampled_feat
+        
+
+def extract_pt_based_stuff(video_embeds, video_grid_thw, pred_tracks,
+                           pred_visibility, obj_ids, pred_tracks_shape, 
+                           deepstack_video_embeds=None, spatial_merge_size=2):
+    time_and_num_points_split = pred_tracks_shape.prod(-1).tolist()
+    num_points = pred_tracks_shape[:, 1].tolist()
+    pred_tracks = torch.split(pred_tracks, time_and_num_points_split, dim=0)
+    pred_visibility = torch.split(pred_visibility, time_and_num_points_split, dim=0)
+    obj_ids = torch.split(obj_ids, num_points, dim=0)
+    batch_split_pt_data = {
+        'obj_ids': obj_ids,
+        'pred_tracks_shape': pred_tracks_shape,
+
+    }
+    sampled_feats = []
+    batch_pred_tracks = []
+    batch_pred_visibility = []
+    batch_size = len(pred_tracks)
+
+    if deepstack_video_embeds is not None:
+        batch_deepstack_video_embeds = [[] for _ in range(batch_size)]
+        split_sizes = (video_grid_thw.prod(-1) // spatial_merge_size**2).tolist()
+        for deepstack_video_embed in deepstack_video_embeds:
+            deepstack_video_embed = torch.split(deepstack_video_embed, split_sizes, dim=0)
+            for idx, per_video_deepstack_video_embed in enumerate(deepstack_video_embed):
+                batch_deepstack_video_embeds[idx].append(per_video_deepstack_video_embed)
+    else:
+        batch_deepstack_video_embeds = None
+
+
+    for idx in range(len(pred_tracks)):
+        pred_track_per_video = pred_tracks[idx]
+        pred_visibility_per_video = pred_visibility[idx]
+        pt_time, pt_num_points = pred_tracks_shape[idx]
+        pred_track_per_video = rearrange(pred_track_per_video, "(t n) c-> t n c", t=pt_time, n=pt_num_points)
+        pred_visibility_per_video = rearrange(pred_visibility_per_video, "(t n)-> t n", t=pt_time, n=pt_num_points)
+        obj_id_per_video = obj_ids[idx]
+        video_embed_per_video = video_embeds[idx]
+        video_grid_thw_per_video = video_grid_thw[idx]
+        video_sampled_feat = feat_trajectory_allignment(video_embed_per_video, pred_track_per_video, 
+                                                video_grid_thw_per_video, spatial_merge_size)
+        if batch_deepstack_video_embeds is not None:
+            deepstack_video_embeds = batch_deepstack_video_embeds[idx]
+            video_deep_stack_sampled_feats = []
+            for deepstack_video_embed in deepstack_video_embeds:
+                deepstack_video_embed = feat_trajectory_allignment(deepstack_video_embed, pred_track_per_video, 
+                                                video_grid_thw_per_video, spatial_merge_size)
+                video_deep_stack_sampled_feats.append(deepstack_video_embed)
+            batch_deepstack_video_embeds[idx] = video_deep_stack_sampled_feats
+        sampled_feats.append(video_sampled_feat)
+        batch_pred_tracks.append(pred_track_per_video.squeeze(2))
+        batch_pred_visibility.append(pred_visibility_per_video)
+    batch_split_pt_data['pred_tracks'] = batch_pred_tracks
+    batch_split_pt_data['pred_visibility'] = batch_pred_visibility
+    if batch_deepstack_video_embeds is not None:
+        num_deepstack_video_embeds = len(batch_deepstack_video_embeds[0])
+        final_deepstack_video_embeds = []
+        for idx in range(num_deepstack_video_embeds):
+            deepstack_video_embeds = [batch_deepstack_video_embeds[i][idx] for i in range(batch_size)]
+            deepstack_video_embeds = torch.cat(deepstack_video_embeds, dim=0)
+            final_deepstack_video_embeds.append(deepstack_video_embeds)
+        return sampled_feats, batch_split_pt_data, final_deepstack_video_embeds
+    return sampled_feats, batch_split_pt_data
 
 def replace_qwen_2_with_mixed_modality_forward():
     transformers.models.qwen2_vl.modeling_qwen2_vl.Qwen2VLModel.forward = qwen2_mixed_modality_forward
@@ -20,6 +103,8 @@ def replace_qwen2_5_with_mixed_modality_forward():
 
 def replace_qwen3_with_mixed_modality_forward():
     transformers.models.qwen3_vl.modeling_qwen3_vl.Qwen3VLModel.forward = qwen3_vl_mixed_modality_forward
+    transformers.models.qwen3_vl.processing_qwen3_vl.Qwen3VLProcessor.__call__ = pt_processor_forward
+    transformers.models.qwen3_vl.modeling_qwen3_vl.Qwen3VLModel.get_rope_index = get_pt_rope_index_qwen3vl
 
 def replace_qwen3_vl_moe_with_mixed_modality_forward():
     transformers.models.qwen3_vl_moe.modeling_qwen3_vl_moe.Qwen3VLMoeModel.forward = qwen3_vl_moe_mixed_modality_forward
@@ -183,6 +268,7 @@ def qwen3_vl_mixed_modality_forward(
     video_grid_thw: Optional[torch.LongTensor] = None,
     cache_position: Optional[torch.LongTensor] = None,
     second_per_grid_ts: Optional[torch.Tensor] = None,
+    pt_data: Optional[dict] = None,
     **kwargs: Unpack[TransformersKwargs],
 ) -> Union[tuple, Qwen3VLModelOutputWithPast]:
     r"""
@@ -220,6 +306,11 @@ def qwen3_vl_mixed_modality_forward(
 
     if pixel_values_videos is not None:
         video_embeds, deepstack_video_embeds = self.get_video_features(pixel_values_videos, video_grid_thw)
+        if pt_data is not None:
+            video_embeds, pt_data, deepstack_video_embeds = extract_pt_based_stuff(
+                video_embeds, video_grid_thw, 
+                pt_data["pred_tracks"], pt_data["pred_visibility"], pt_data["obj_ids"], pt_data["pred_tracks_shape"], 
+                deepstack_video_embeds, self.visual.spatial_merge_size)
         video_embeds = torch.cat(video_embeds, dim=0).to(inputs_embeds.device, inputs_embeds.dtype)
         _, video_mask = self.get_placeholder_mask(
             input_ids, inputs_embeds=inputs_embeds, video_features=video_embeds
@@ -285,6 +376,7 @@ def qwen3_vl_mixed_modality_forward(
                 image_grid_thw,
                 video_grid_thw,
                 attention_mask=attention_mask_tensor,
+                pt_data=pt_data,
             )
             self.rope_deltas = rope_deltas
         # then use the prev pre-calculated rope-deltas to get the correct position ids
