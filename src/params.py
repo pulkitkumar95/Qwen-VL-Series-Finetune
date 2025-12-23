@@ -293,4 +293,10 @@ class DataArguments:
     nframes: Optional[int] = field(default=None, metadata={"help": "Number of frames for video data."})
     eval_dataset_name: Optional[str] = field(default=None, metadata={"help": "Name of the evaluation dataset."})
     result_dump_dir: Optional[str] = field(default=None, metadata={"help": "Directory to dump the evaluation results."})
-    
+    use_pt: bool = field(default=False, metadata={"help": "Whether to use point tracking."})
+    pt_folder: Optional[str] = field(default='/fs/vulcan-projects/motion_llm/pt_data/', 
+                                    metadata={"help": "Path to the point tracking data."})
+    pt_name: Optional[str] = field(default='cotracker3_bip_fr_25perc_fps_4', metadata={"help": "Name of the point tracking data."})
+    pt_dataset_name: Optional[str] = field(default='llava_video', metadata={"help": "Name of the point tracking dataset."})
+    num_pt_points_per_obj: Optional[int] = field(default=4, metadata={"help": "Number of point tracking points per object."})
+    pt_sampling_method: Optional[str] = field(default='random', metadata={"help": "Method to sample point tracking points."})
