@@ -18,6 +18,46 @@ from src.constants import (
 
 from .data_utils import get_image_info, get_video_info, llava_to_openai, pad_sequence
 
+def point_sampler(obj_ids, num_pt_points_per_obj, sampling_method='random'):
+    all_obj_ids = obj_ids.cpu().numpy()
+    sampled_pt_indices = []
+    if sampling_method == 'random':
+        for single_unique_obj_id in np.unique(all_obj_ids):
+            obj_id_indices = np.where(all_obj_ids == single_unique_obj_id)[0]
+            num_pts_for_obj = min(num_pt_points_per_obj, len(obj_id_indices))
+            sampled_indices = np.random.choice(obj_id_indices, num_pts_for_obj, replace=False)
+            sampled_pt_indices.extend(sampled_indices)
+    else:
+        raise ValueError(f"Sampling method not supported: {sampling_method}")
+    
+    return sampled_pt_indices
+   
+def preprocess_pt_data(pt_data, video_metadata, num_pt_points_per_obj,
+                       pt_sampling_method='random', temporal_patch_size=2):
+    max_y, max_x = video_metadata['height'], video_metadata['width']
+    pred_tracks = pt_data['pred_tracks']
+    pred_visibility = pt_data['pred_visibility']
+    frames_used_for_pt = pred_tracks.shape[0]
+    frames_selected_for_video = video_metadata['frames_indices']
+    num_frames_selected = len(frames_selected_for_video)
+    pt_frame_indices_to_use = np.linspace(0, frames_used_for_pt - 1, num_frames_selected).astype(int)
+    pred_visibility = pred_visibility[pt_frame_indices_to_use] 
+    pred_tracks = pred_tracks[pt_frame_indices_to_use]
+    obj_ids = pt_data['obj_ids']
+    #normalize to -1 to 1
+    div_factor = torch.tensor([max_x, max_y]).view(1, 1, 2)
+    pred_tracks = pred_tracks / div_factor
+    pred_tracks = (pred_tracks - 0.5)/ 0.5
+    sampled_pt_indices = point_sampler(obj_ids, num_pt_points_per_obj, pt_sampling_method)
+    pred_tracks = pred_tracks[:, sampled_pt_indices]
+    pred_visibility = pred_visibility[:,sampled_pt_indices]
+    pt_data_to_return = {
+        'pred_tracks': pred_tracks[::temporal_patch_size],
+        'pred_visibility': pred_visibility[::temporal_patch_size],
+        'obj_ids': pt_data['obj_ids'][sampled_pt_indices],
+    }
+    return pt_data_to_return
+
 class SupervisedDataset(Dataset):
     """Dataset for supervised fine-tuning."""
 
