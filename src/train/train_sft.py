@@ -24,6 +24,20 @@ from monkey_patch_forward import (
     replace_qwen3_vl_moe_with_mixed_modality_forward
 )
 from monkey_patch_vision import replace_qwen2_5_vision
+from transformers import TrainerCallback
+from accelerate import Accelerator
+
+from transformers import TrainerCallback
+
+class EmptyCacheCallback(TrainerCallback):
+    def __init__(self, interval=500):
+        self.interval = interval
+
+    def on_step_end(self, args, state, control, **kwargs):
+        if state.global_step and state.global_step % self.interval == 0:
+            print(f"Empty cache at step {state.global_step}")
+            torch.cuda.empty_cache()
+        return control
 
 local_rank = None
 
@@ -256,6 +270,7 @@ def train():
         model=model,
         processing_class=processor,
         args=training_args,
+        callbacks=[EmptyCacheCallback(interval=1)],
         **data_module
     )
 
