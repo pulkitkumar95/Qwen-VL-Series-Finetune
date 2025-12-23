@@ -100,6 +100,12 @@ class SupervisedDataset(Dataset):
             self.return_video_metadata = False
 
         self.mode = mode
+        self.use_pt = data_args.use_pt
+        self.pt_folder = data_args.pt_folder
+        self.pt_name = data_args.pt_name
+        self.pt_dataset_name = data_args.pt_dataset_name
+        self.num_pt_points_per_obj = data_args.num_pt_points_per_obj
+        self.pt_sampling_method = data_args.pt_sampling_method
 
     def __len__(self):
         return len(self.list_data_dict)
@@ -155,6 +161,7 @@ class SupervisedDataset(Dataset):
 
             videos = []
             for video_file in video_files:
+                og_video_file = video_file
                 if not os.path.exists(video_file):
                     if not video_file.startswith("http"):
                         video_file = os.path.join(video_folder, video_file)
@@ -170,6 +177,15 @@ class SupervisedDataset(Dataset):
                     nframes=self.data_args.nframes,
                     duration=duration
                 )
+                if isinstance(video_input, tuple):
+                    video_metadata = video_input[1]
+                if self.use_pt:
+                    pt_file = og_video_file.replace(".mp4", ".pkl")
+                    pt_path = os.path.join(self.pt_folder, self.pt_name, self.pt_dataset_name, 'feat_dump', pt_file)
+                    pt_data = pickle.load(open(pt_path, "rb"))
+                    pt_data = preprocess_pt_data(pt_data, video_metadata, self.num_pt_points_per_obj, self.pt_sampling_method)
+                else:
+                    pt_data = None
                 videos.append(video_input)
         else:
             grid_key = None
@@ -246,6 +262,7 @@ class SupervisedDataset(Dataset):
                         return_tensors='pt',
                         **video_kwargs,
                         video_metadata=video_metadatas_for_turn,
+                        pt_data=pt_data,
                     )
                 else:
                     inputs = processor(
@@ -329,6 +346,12 @@ class SupervisedDataset(Dataset):
         if len(all_second_gird) > 0:
             second_gird = all_second_gird
             data_dict["second_per_grid_ts"] = second_gird
+
+        if self.use_pt:
+            data_dict["pred_tracks"] = pt_data["pred_tracks"]
+            data_dict["pred_visibility"] = pt_data["pred_visibility"]
+            data_dict["obj_ids"] = pt_data["obj_ids"]
+
         return data_dict
 
 class DataCollatorForSupervisedDataset(object):
