@@ -371,6 +371,11 @@ class DataCollatorForSupervisedDataset(object):
         batch_second_per_grid_ts = []
         question_ids = []
         task_types = []
+        batch_pred_tracks = []
+        batch_pred_visibility = []
+        batch_obj_ids = []
+        batch_pred_tracks_shape = []
+        use_pt = False
  
         for example in examples:
             keys = example.keys()
@@ -385,6 +390,16 @@ class DataCollatorForSupervisedDataset(object):
                 question_ids.append(example["question_key"])
             if "task_type" in keys:
                 task_types.append(example["task_type"])
+
+            if "pred_tracks" in keys:
+                batch_pred_tracks_shape.append(torch.tensor([example["pred_visibility"].shape])) #just need frames and num_points
+
+                pred_tracks = rearrange(example["pred_tracks"], "t n c-> (t n) c")
+                pred_visibility = rearrange(example["pred_visibility"], "t n-> (t n)")
+                batch_pred_tracks.append(pred_tracks)
+                batch_pred_visibility.append(pred_visibility)
+                batch_obj_ids.append(example["obj_ids"])
+                use_pt = True
 
             batch_input_ids.append(example["input_ids"])
             batch_label_ids.append(example["labels"])
@@ -416,6 +431,17 @@ class DataCollatorForSupervisedDataset(object):
             video_thw = torch.cat(batch_video_thw, dim=0)
             data_dict["pixel_values_videos"] = pixel_video_values
             data_dict["video_grid_thw"] = video_thw
+    
+            if use_pt:
+                data_dict["pt_data"] = dict()
+                pred_tracks = torch.cat(batch_pred_tracks, dim=0)
+                pred_visibility = torch.cat(batch_pred_visibility, dim=0)
+                obj_ids = torch.cat(batch_obj_ids, dim=0)
+                pred_tracks_shape = torch.cat(batch_pred_tracks_shape, dim=0)
+                data_dict["pt_data"]["pred_tracks"] = pred_tracks
+                data_dict["pt_data"]["pred_visibility"] = pred_visibility
+                data_dict["pt_data"]["obj_ids"] = obj_ids
+                data_dict["pt_data"]["pred_tracks_shape"] = pred_tracks_shape
 
         if len(batch_second_per_grid_ts) > 0:
             data_dict["second_per_grid_ts"] = batch_second_per_grid_ts
