@@ -74,6 +74,14 @@ def generate_commands(args):
             'data_json_path': '/fs/vulcan-projects/motion_llm/pulkit/dataset_utils/final_jsons/favor_llava_style_option_letter.json',
             'image_folder_path': '/fs/cfar-projects/actionloc/hub/datasets--zl2048--FAVOR/snapshots/2a78953831e41ebd046a7e6e55eb3b6c28f61e9b/videos/FAVOR-Bench',
         },
+        'vlm4d': {
+            'data_json_path': '/fs/vulcan-projects/motion_llm/pulkit/dataset_utils/final_jsons/vlm4d_llava_style_option_letter.json',
+            'image_folder_path': '/fs/vulcan-projects/motion_llm/datasets/VLM4D/',
+        },
+        'wolf': {
+            'data_json_path': '/fs/vulcan-projects/motion_llm/pulkit/dataset_utils/final_jsons/wolf_llava_style_option_letter.json',
+            'image_folder_path': '/fs/vulcan-projects/motion_llm/datasets/WoWolf_v2-dev',
+        },
     }
 
     if args.mode == 'train':
